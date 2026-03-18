@@ -22,7 +22,7 @@ router.get('/', async (req, res) => {
   return res.json({ prizes: data });
 });
 
-app.get('/test-db', async (req, res) => {
+router.get('/test-db', async (req, res) => {
   const { data, error } = await supabaseAdmin
     .from('prizes')
     .select('count')
