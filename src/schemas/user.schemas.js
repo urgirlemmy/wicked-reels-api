@@ -12,6 +12,9 @@ export const updateUsernameSchema = Joi.object({
       'string.max':      'Username must be at most 30 characters.',
       'any.required':    'Username is required.',
     }),
+    password: Joi.string().required().messages({
+    'any.required': 'Password is required.',
+  }),
 });
 
 export const updateEmailSchema = Joi.object({
@@ -22,6 +25,9 @@ export const updateEmailSchema = Joi.object({
       'string.email': 'Must be a valid email address.',
       'any.required': 'Email is required.',
     }),
+    password: Joi.string().required().messages({
+    'any.required': 'Password is required.',
+  }),
 });
 
 export const updatePasswordSchema = Joi.object({

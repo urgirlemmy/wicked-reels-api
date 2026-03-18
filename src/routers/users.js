@@ -1,10 +1,10 @@
 import { Router } from 'express';
-import { supabaseAdmin } from '../supabaseClient.js';
+import { supabase, supabaseAdmin } from '../supabaseClient.js';
 import { verifyToken } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
+import logger from '../utils/logger.js';
 import {
   updateUsernameSchema,
-  updateEmailSchema,
   updatePasswordSchema,
   deleteAccountSchema,
 } from '../schemas/user.schemas.js';
@@ -12,20 +12,33 @@ import {
 export const router = Router();
 
 // ── GET /users/me ─────────────────────────────────────────────────────────────
-// Authenticated — get current user profile
 router.get('/me', verifyToken, async (req, res) => {
   return res.json({ user: req.user });
 });
 
 // ── PATCH /users/me/username ──────────────────────────────────────────────────
-// Authenticated — update username
 router.patch('/me/username', verifyToken, validate(updateUsernameSchema), async (req, res) => {
-  const { username } = req.body;
+  const { username, password } = req.body;
 
-  // Check not taken
+  logger.info('Username update requested', { userId: req.user.id, newUsername: username });
+
+  const permanentEmail = `${req.user.id}@naughtyspin.internal`;
+
+  // Use a fresh anon client call — never use supabaseAdmin for signIn
+  // as it mutates shared session state
+  const { error: signInError } = await supabase.auth.signInWithPassword({
+    email: permanentEmail,
+    password,
+  });
+
+  if (signInError) {
+    logger.warn('Username update — password verify failed', { userId: req.user.id, error: signInError.message });
+    return res.status(401).json({ error: 'Incorrect password.' });
+  }
+
   const { data: existing } = await supabaseAdmin
     .from('profiles')
-    .select('id')
+    .select('id', 'username')
     .eq('username', username)
     .neq('id', req.user.id)
     .maybeSingle();
@@ -34,93 +47,89 @@ router.patch('/me/username', verifyToken, validate(updateUsernameSchema), async 
     return res.status(409).json({ error: 'Username already taken.' });
   }
 
-  const { data, error } = await supabaseAdmin
+  const { error } = await supabaseAdmin
     .from('profiles')
     .update({ username, updated_at: new Date().toISOString() })
-    .eq('id', req.user.id)
-    .select()
-    .single();
+    .eq('id', req.user.id);
 
   if (error) {
+    logger.error('Username update — DB failed', { userId: req.user.id, error: error.message });
     return res.status(500).json({ error: 'Failed to update username.' });
   }
 
-  return res.json({ user: data });
-});
+  // Fetch the updated profile separately — avoids maybeSingle() null issue
+  const { data: updatedProfile, error: fetchError } = await supabaseAdmin
+    .from('profiles')
+    .select('*')
+    .eq('id', req.user.id)
+    .single();
 
-// ── PATCH /users/me/email ─────────────────────────────────────────────────────
-// Authenticated — update email
-router.patch('/me/email', verifyToken, validate(updateEmailSchema), async (req, res) => {
-  const { email } = req.body;
-
-  // Update in Supabase Auth
-  const { error: authError } = await supabaseAdmin.auth.admin.updateUserById(
-    req.user.id,
-    { email }
-  );
-
-  if (authError) {
-    return res.status(400).json({ error: authError.message });
+  if (fetchError || !updatedProfile) {
+    logger.error('Username update — fetch after update failed', { userId: req.user.id });
+    return res.status(500).json({ error: 'Update succeeded but failed to fetch profile.' });
   }
 
-  return res.json({ ok: true, email });
+  logger.info('Username updated', { userId: req.user.id, username: updatedProfile.username });
+  return res.json({ user: updatedProfile });
 });
 
 // ── PATCH /users/me/password ──────────────────────────────────────────────────
-// Authenticated — update password
 router.patch('/me/password', verifyToken, validate(updatePasswordSchema), async (req, res) => {
   const { current_password, new_password } = req.body;
 
-  // Verify current password by attempting sign in
-  const syntheticEmail = `${req.user.username.toLowerCase()}@naughtyspin.internal`;
+  logger.info('Password update requested', { userId: req.user.id });
 
-  const { error: signInError } = await supabaseAdmin.auth.signInWithPassword({
-    email:    syntheticEmail,
+  const permanentEmail = `${req.user.id}@naughtyspin.internal`;
+
+  const { error: signInError } = await supabase.auth.signInWithPassword({
+    email: permanentEmail,
     password: current_password,
   });
 
   if (signInError) {
+    logger.warn('Password update — verify failed', { userId: req.user.id, error: signInError.message });
     return res.status(401).json({ error: 'Current password is incorrect.' });
   }
 
-  // Update password
   const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(
     req.user.id,
     { password: new_password }
   );
 
   if (updateError) {
+    logger.error('Password update — auth failed', { userId: req.user.id, error: updateError.message });
     return res.status(400).json({ error: updateError.message });
   }
 
+  logger.info('Password updated', { userId: req.user.id });
   return res.json({ ok: true });
 });
 
 // ── DELETE /users/me ──────────────────────────────────────────────────────────
-// Authenticated — delete account
 router.delete('/me', verifyToken, validate(deleteAccountSchema), async (req, res) => {
   const { password } = req.body;
 
-  // Verify password first
-  const syntheticEmail = `${req.user.username.toLowerCase()}@naughtyspin.internal`;
+  logger.info('Account deletion requested', { userId: req.user.id });
 
-  const { error: signInError } = await supabaseAdmin.auth.signInWithPassword({
-    email:    syntheticEmail,
+  const permanentEmail = `${req.user.id}@naughtyspin.internal`;
+
+  const { error: signInError } = await supabase.auth.signInWithPassword({
+    email: permanentEmail,
     password,
   });
 
   if (signInError) {
+    logger.warn('Account deletion — password verify failed', { userId: req.user.id, error: signInError.message });
     return res.status(401).json({ error: 'Incorrect password.' });
   }
 
-  // Delete from Supabase Auth — cascades to profiles via ON DELETE CASCADE
-  const { error: deleteError } = await supabaseAdmin.auth.admin.deleteUser(
-    req.user.id
-  );
+  const { error: deleteError } = await supabaseAdmin.auth.admin.deleteUser(req.user.id);
 
   if (deleteError) {
+    logger.error('Account deletion — auth failed', { userId: req.user.id, error: deleteError.message });
     return res.status(500).json({ error: 'Failed to delete account.' });
   }
 
+  logger.info('Account deleted', { userId: req.user.id });
   return res.json({ ok: true });
 });
