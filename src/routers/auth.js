@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { supabase, supabaseAdmin } from '../supabaseClient.js';
 import { validate } from '../middleware/validate.js';
 import { registerSchema, loginSchema } from '../schemas/auth.schemas.js';
+import logger from '../utils/logger.js';
 
 export const router = Router();
 
@@ -91,10 +92,9 @@ router.post('/register', validate(registerSchema), async (req, res) => {
 router.post('/login', validate(loginSchema), async (req, res) => {
   const { username, password } = req.body;
 
-  // Look up profile by username to get the UUID
-  const { data: profile } = await supabaseAdmin
+  const { data: profile, error: profileError } = await supabaseAdmin
     .from('profiles')
-    .select('id, username')
+    .select('id, username, email')
     .eq('username', username)
     .maybeSingle();
 
@@ -102,11 +102,11 @@ router.post('/login', validate(loginSchema), async (req, res) => {
     return res.status(401).json({ error: 'Invalid username or password.' });
   }
 
-  // Construct UUID-based email — stable identity regardless of username changes
-  const permanentEmail = `${profile.id}@naughtyspin.internal`;
+  // Use real email if available, otherwise fall back to synthetic
+  const loginEmail = profile.email ?? `${profile.id}@naughtyspin.internal`;
 
   const { data, error } = await supabase.auth.signInWithPassword({
-    email: permanentEmail,
+    email: loginEmail,
     password,
   });
 
@@ -114,7 +114,6 @@ router.post('/login', validate(loginSchema), async (req, res) => {
     return res.status(401).json({ error: 'Invalid username or password.' });
   }
 
-  // Fetch full profile
   const { data: fullProfile } = await supabaseAdmin
     .from('profiles')
     .select('*')
@@ -130,6 +129,38 @@ router.post('/login', validate(loginSchema), async (req, res) => {
 
 // ── POST /auth/logout ─────────────────────────────────────────────────────────
 router.post('/logout', async (req, res) => {
-  try { await supabase.auth.signOut(); } catch (_) {}
+  try { await supabase.auth.signOut(); } catch (_) { }
+  return res.json({ ok: true });
+});
+
+// ── POST /auth/forgot-password ────────────────────────────────────────────────
+router.post('/forgot-password', async (req, res) => {
+  const { username } = req.body;
+
+  if (!username) {
+    return res.status(400).json({ error: 'Username is required.' });
+  }
+
+  // Look up profile
+  const { data: profile } = await supabaseAdmin
+    .from('profiles')
+    .select('id, email')
+    .eq('username', username)
+    .maybeSingle();
+
+  // Always return success to avoid username enumeration
+  if (!profile || !profile.email) {
+    return res.json({ ok: true });
+  }
+
+  const { error } = await supabase.auth.resetPasswordForEmail(profile.email, {
+    redirectTo: `${process.env.FRONTEND_URL}/reset-password`,
+  });
+
+  if (error) {
+    logger.error('Forgot password — reset email failed', { error: error.message });
+  }
+
+  // Always return success regardless — security best practice
   return res.json({ ok: true });
 });

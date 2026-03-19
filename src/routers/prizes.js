@@ -22,14 +22,6 @@ router.get('/', async (req, res) => {
   return res.json({ prizes: data });
 });
 
-router.get('/test-db', async (req, res) => {
-  const { data, error } = await supabaseAdmin
-    .from('prizes')
-    .select('count')
-    .single();
-  res.json({ data, error });
-});
-
 // ── GET /prizes/all ───────────────────────────────────────────────────────────
 // Admin only — includes inactive prizes
 router.get('/all', verifyToken, requireAdmin, async (req, res) => {

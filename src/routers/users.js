@@ -5,6 +5,7 @@ import { validate } from '../middleware/validate.js';
 import logger from '../utils/logger.js';
 import {
   updateUsernameSchema,
+  updateEmailSchema,
   updatePasswordSchema,
   deleteAccountSchema,
 } from '../schemas/user.schemas.js';
@@ -71,6 +72,85 @@ router.patch('/me/username', verifyToken, validate(updateUsernameSchema), async 
 
   logger.info('Username updated', { userId: req.user.id, username: updatedProfile.username });
   return res.json({ user: updatedProfile });
+});
+
+// ── PATCH /users/me/email ─────────────────────────────────────────────────────
+router.patch('/me/email', verifyToken, validate(updateEmailSchema), async (req, res) => {
+  const { email, password } = req.body;
+
+  logger.info('Email update requested', { userId: req.user.id });
+
+  // Verify password first
+  const permanentEmail = `${req.user.id}@naughtyspin.internal`;
+
+  const { error: signInError } = await supabase.auth.signInWithPassword({
+    email: permanentEmail,
+    password,
+  });
+
+  if (signInError) {
+    // Try signing in with real email in case they already updated it
+    if (req.user.email) {
+      const { error: realSignInError } = await supabase.auth.signInWithPassword({
+        email: req.user.email,
+        password,
+      });
+      if (realSignInError) {
+        return res.status(401).json({ error: 'Incorrect password.' });
+      }
+    } else {
+      return res.status(401).json({ error: 'Incorrect password.' });
+    }
+  }
+
+  // Check email not already in profiles
+  const { data: existingProfile } = await supabaseAdmin
+    .from('profiles')
+    .select('id')
+    .eq('email', email)
+    .neq('id', req.user.id)
+    .maybeSingle();
+
+  if (existingProfile) {
+    return res.status(409).json({ error: 'Email already in use.' });
+  }
+
+  // Check email not already in auth.users
+  const { data: authUsers } = await supabaseAdmin.auth.admin.listUsers();
+  const emailTakenInAuth = authUsers?.users?.some(
+    u => u.email === email && u.id !== req.user.id
+  );
+
+  if (emailTakenInAuth) {
+    return res.status(409).json({ error: 'Email already in use.' });
+  }
+
+  // Update auth.users email — this is now the real login email
+  const { error: authError } = await supabaseAdmin.auth.admin.updateUserById(
+    req.user.id,
+    { email }
+  );
+
+  if (authError) {
+    logger.error('Email update — auth failed', { userId: req.user.id, error: authError.message });
+    return res.status(400).json({ error: authError.message });
+  }
+
+  // Store in profiles
+  const { data: updatedProfile, error: profileError } = await supabaseAdmin
+    .from('profiles')
+    .update({ email, updated_at: new Date().toISOString() })
+    .eq('id', req.user.id)
+    .select()
+    .single();
+
+  if (profileError) {
+    logger.error('Email update — profile failed', { userId: req.user.id, error: profileError.message });
+    return res.status(500).json({ error: 'Failed to save email.' });
+  }
+
+  logger.info('Email updated', { userId: req.user.id });
+  return res.json({ ok: true, user: updatedProfile });
 });
 
 // ── PATCH /users/me/password ──────────────────────────────────────────────────
