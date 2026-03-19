@@ -164,3 +164,46 @@ router.post('/forgot-password', async (req, res) => {
   // Always return success regardless — security best practice
   return res.json({ ok: true });
 });
+
+// ── POST /auth/reset-password ─────────────────────────────────────────────────
+router.post('/reset-password', async (req, res) => {
+  const { access_token, refresh_token, new_password } = req.body;
+
+  if (!access_token || !refresh_token || !new_password) {
+    return res.status(400).json({ error: 'Missing required fields.' });
+  }
+
+  if (new_password.length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+  }
+
+  try {
+    // Set the session using the tokens from the reset link
+    const { data: sessionData, error: sessionError } = await supabase.auth.setSession({
+      access_token,
+      refresh_token,
+    });
+
+    if (sessionError || !sessionData.user) {
+      logger.warn('Reset password — invalid session tokens', { error: sessionError?.message });
+      return res.status(401).json({ error: 'Invalid or expired reset link.' });
+    }
+
+    // Update password using admin client
+    const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(
+      sessionData.user.id,
+      { password: new_password }
+    );
+
+    if (updateError) {
+      logger.error('Reset password — update failed', { error: updateError.message });
+      return res.status(400).json({ error: updateError.message });
+    }
+
+    logger.info('Password reset successful', { userId: sessionData.user.id });
+    return res.json({ ok: true });
+  } catch (err) {
+    logger.error('Reset password — exception', { error: err.message });
+    return res.status(500).json({ error: 'Failed to reset password.' });
+  }
+});
