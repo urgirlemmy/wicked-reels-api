@@ -58,6 +58,7 @@ router.get('/claims', verifyToken, validateQuery(spinHistoryQuerySchema), async 
   const { data, error, count } = await supabaseAdmin
     .from('claims')
     .select(`
+      spin_id,
       id,
       status,
       claimed_at,
